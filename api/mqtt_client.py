@@ -8,7 +8,8 @@ TOPIC = "ids/data"
 def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode())
-        print("📩 Received:", data[:5], "...")
+
+        print("\n📩 Received Data (first 5):", data[:5])
 
         response = requests.post(
             "http://127.0.0.1:5000/predict",
@@ -16,7 +17,8 @@ def on_message(client, userdata, msg):
         )
 
         try:
-            print("🤖 Prediction:", response.json())
+            result = response.json()
+            print("🤖 Prediction:", result["message"])
         except:
             print("❌ API Error:", response.text)
 

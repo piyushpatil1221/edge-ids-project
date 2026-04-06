@@ -1,86 +1,191 @@
+# ==============================
+# NSL-KDD Intrusion Detection System
+# ==============================
+
+# 1. IMPORT LIBRARIES
+import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+warnings.filterwarnings('ignore')
+
+import torch
+from sklearn import preprocessing
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.feature_selection import mutual_info_classif, SelectKBest
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from sklearn.metrics import (confusion_matrix, classification_report,
+                             accuracy_score, recall_score,
+                             precision_score, f1_score, roc_auc_score)
 import joblib
 import pickle
 
-# -------------------------------
-# 1. LOAD DATA
-# -------------------------------
-df = pd.read_csv('../data/KDDTrain+_20Percent.txt', header=None)
+# ==============================
+# 2. READ DATASET
+# ==============================
+df = pd.read_csv("KDDTrain+.txt")
 
-# Remove last column (difficulty)
-df = df.iloc[:, :-1]
+# Assign column names
+columns = ['duration','protocol_type','service','flag','src_bytes','dst_bytes',
+           'land','wrong_fragment','urgent','hot','num_failed_logins','logged_in',
+           'num_compromised','root_shell','su_attempted','num_root',
+           'num_file_creations','num_shells','num_access_files',
+           'num_outbound_cmds','is_host_login','is_guest_login','count',
+           'srv_count','serror_rate','srv_serror_rate','rerror_rate',
+           'srv_rerror_rate','same_srv_rate','diff_srv_rate',
+           'srv_diff_host_rate','dst_host_count','dst_host_srv_count',
+           'dst_host_same_srv_rate','dst_host_diff_srv_rate',
+           'dst_host_same_src_port_rate','dst_host_srv_diff_host_rate',
+           'dst_host_serror_rate','dst_host_srv_serror_rate',
+           'dst_host_rerror_rate','dst_host_srv_rerror_rate',
+           'attack','level']
 
-# -------------------------------
-# 2. SPLIT FEATURES & LABEL
-# -------------------------------
-X = df.iloc[:, :-1]
-y = df.iloc[:, -1]
+df.columns = columns
 
-# Convert labels: normal = 0, attack = 1
-y = y.apply(lambda x: 0 if x == "normal" else 1)
+# ==============================
+# 3. DATA CLEANING
+# ==============================
 
-# -------------------------------
-# 3. ENCODING
-# -------------------------------
-X = pd.get_dummies(X)
+# Convert attack labels to binary
+df['attack'] = df['attack'].apply(lambda x: 'normal' if x == 'normal' else 'attack')
 
-# ✅ Save columns BEFORE converting to numpy
-columns = X.columns.astype(str)
+# ==============================
+# 4. ENCODING
+# ==============================
+le = preprocessing.LabelEncoder()
+cat_cols = ['protocol_type', 'service', 'flag', 'attack']
 
-# -------------------------------
-# 4. CONVERT TO NUMPY
-# -------------------------------
-X = X.values
-y = y.values
+for col in cat_cols:
+    df[col] = le.fit_transform(df[col])
 
-# -------------------------------
-# 5. TRAIN-TEST SPLIT
-# -------------------------------
+# ==============================
+# 5. TRAIN TEST SPLIT
+# ==============================
+X = df.drop(["attack"], axis=1)
+y = df["attack"]
+
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+    X, y, test_size=0.1, random_state=43
 )
 
-# -------------------------------
-# 6. TRAIN MODEL (BALANCED)
-# -------------------------------
-model = RandomForestClassifier(
-    n_estimators=100,
-    class_weight='balanced',
-    random_state=42
+# ==============================
+# 6. FEATURE SELECTION
+# ==============================
+mutual_info = mutual_info_classif(X_train, y_train)
+mutual_info = pd.Series(mutual_info, index=X_train.columns)
+
+# Select top 15 features
+columns_selected = ['duration', 'protocol_type', 'service', 'flag', 'src_bytes',
+                    'dst_bytes', 'wrong_fragment', 'hot', 'logged_in',
+                    'num_compromised', 'count', 'srv_count',
+                    'serror_rate', 'srv_serror_rate', 'rerror_rate']
+
+X_train = X_train[columns_selected]
+X_test = X_test[columns_selected]
+
+# ==============================
+# 7. SCALING
+# ==============================
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+# ==============================
+# 8. MODEL TRAINING
+# ==============================
+
+# Logistic Regression
+log_model = LogisticRegression(random_state=42)
+log_model.fit(X_train, y_train)
+
+# XGBoost
+xgb_model = XGBClassifier(
+    random_state=42,
+    tree_method='hist',
+    device='cuda'
+)
+xgb_model.fit(X_train, y_train)
+
+# ==============================
+# 9. EVALUATION FUNCTION
+# ==============================
+def evaluate_model(model, X_train, y_train, X_test, y_test):
+    print("\n===== TEST SET =====")
+    y_pred = model.predict(X_test)
+    print(confusion_matrix(y_test, y_pred))
+    print(classification_report(y_test, y_pred))
+
+    print("\n===== TRAIN SET =====")
+    y_train_pred = model.predict(X_train)
+    print(confusion_matrix(y_train, y_train_pred))
+    print(classification_report(y_train, y_train_pred))
+
+# Evaluate models
+evaluate_model(log_model, X_train, y_train, X_test, y_test)
+evaluate_model(xgb_model, X_train, y_train, X_test, y_test)
+
+# ==============================
+# 10. HYPERPARAMETER TUNING
+# ==============================
+param_grid = {
+    "n_estimators": [50, 100],
+    "max_depth": [3, 6],
+    "learning_rate": [0.05, 0.1],
+    "subsample": [0.8],
+    "colsample_bytree": [0.8]
+}
+
+grid = GridSearchCV(
+    XGBClassifier(tree_method='hist', device='cuda'),
+    param_grid,
+    scoring="f1",
+    n_jobs=1
 )
 
-model.fit(X_train, y_train)
+grid.fit(X_train, y_train)
 
-# -------------------------------
-# 7. EVALUATE MODEL
-# -------------------------------
-y_pred = model.predict(X_test)
+print("Best Params:", grid.best_params_)
 
-# ✅ Accuracy
-accuracy = accuracy_score(y_test, y_pred)
-print("\n🎯 Accuracy:", accuracy)
+# ==============================
+# 11. FINAL MODEL
+# ==============================
+final_model = XGBClassifier(
+    tree_method='hist',
+    device='cuda',
+    **grid.best_params_
+)
 
-# ✅ Classification Report
-print("\n📊 Classification Report:\n")
-print(classification_report(y_test, y_pred))
+final_model.fit(X_train, y_train)
 
-# ✅ Confusion Matrix
-print("\n📌 Confusion Matrix:\n")
-print(confusion_matrix(y_test, y_pred))
+# ==============================
+# 12. FINAL EVALUATION
+# ==============================
+y_pred = final_model.predict(X_test)
+y_prob = final_model.predict_proba(X_test)
 
-# -------------------------------
-# 8. SAVE MODEL
-# -------------------------------
-joblib.dump(model, 'ids_model.pkl')
+print("\nFinal Model Performance:")
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("F1 Score:", f1_score(y_test, y_pred))
+print("Recall:", recall_score(y_test, y_pred))
+print("AUC:", roc_auc_score(y_test, y_prob[:, 1]))
 
-# -------------------------------
-# 9. SAVE COLUMNS
-# -------------------------------
+# ==============================
+# 13. SAVE MODEL
+# ==============================
+joblib.dump(final_model, 'ids_model.pkl')
+
+# with open('columns.pkl', 'wb') as f:
+#     pickle.dump(columns_selected, f)
+
+# Use ALL features
+columns_selected = X.columns.tolist()
+
+# Save ALL columns
 with open('columns.pkl', 'wb') as f:
-    pickle.dump(list(columns), f)
+    pickle.dump(columns_selected, f)
 
-print("\n✅ Model + columns saved successfully!")
+print("\nModel and columns saved successfully!")
+joblib.dump(scaler, 'scaler.pkl')
