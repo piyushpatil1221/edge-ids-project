@@ -9,18 +9,19 @@ def on_message(client, userdata, msg):
     try:
         data = json.loads(msg.payload.decode())
 
-        print("\n📩 Received Data (first 5):", data[:5])
+        print("\n📩 Received:", data)
 
         response = requests.post(
             "http://127.0.0.1:5000/predict",
             json={"data": data}
         )
 
-        try:
-            result = response.json()
+        result = response.json()
+
+        if "message" in result:
             print("🤖 Prediction:", result["message"])
-        except:
-            print("❌ API Error:", response.text)
+        else:
+            print("❌ API Error:", result)
 
     except Exception as e:
         print("❌ MQTT Error:", e)
